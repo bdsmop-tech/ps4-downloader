@@ -127,15 +127,17 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 info = client.ping()
 
-        if info["rpi"]:
+        if info.get("rpi"):
+            console.print(f"[green]:12800 RPI[/green] {cfg.ps4.host} (/api/install)")
+        if info.get("etahen"):
+            console.print(f"[green]:12800 etaHEN[/green] {cfg.ps4.host} (/upload)")
+        if info.get("port_12800") and not info.get("rpi") and not info.get("etahen"):
             console.print(
-                f"[green]:12800[/green] open on {cfg.ps4.host}  "
-                "← DPI uses this first (RPI / install API)"
+                f"[yellow]:12800 open[/yellow] on {cfg.ps4.host} "
+                "(unknown service — will try RPI then etaHEN like DPI)"
             )
-        else:
+        if not info.get("port_12800") and not info.get("rpi") and not info.get("etahen"):
             console.print(f"[dim]:12800[/dim] closed on {cfg.ps4.host}")
-        if info["etahen"]:
-            console.print("[dim]etaHEN[/dim] banner on :12800")
         if info["binloader"]:
             console.print(
                 f"[green]BinLoader[/green] {cfg.ps4.host}:{info['binloader_port']}"
@@ -143,28 +145,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             errs = info.get("binloader_errors") or {}
             console.print(
-                f"[yellow]BinLoader[/yellow] closed on {list(client.binloader_ports)} {errs}"
+                f"[dim]BinLoader[/dim] closed {list(client.binloader_ports)} {errs}"
             )
-            if gh_bin.get("enabled") is False:
-                console.print(
-                    "[dim]config.ini BinLoader Enabled=0[/dim]"
-                )
-            elif info["rpi"]:
-                console.print(
-                    "[dim]BinLoader optional while :12800 is open — DPI will use :12800[/dim]"
-                )
-            elif ftp_ok:
-                console.print(
-                    "[yellow]FTP ok, BinLoader down, :12800 down[/yellow] — "
-                    "enable BinLoader or open RPI for installs"
-                )
-            if gh_bin.get("port"):
-                console.print(f"config binloader_port=[cyan]{gh_bin['port']}[/cyan]")
         if ftp_ok:
             console.print(f"[green]FTP[/green] {cfg.ps4.host}:{cfg.ps4.ftp_port}")
         else:
             console.print(f"[dim]FTP[/dim] {cfg.ps4.host}:{cfg.ps4.ftp_port} offline")
-        return 0 if info["binloader"] or info["rpi"] or ftp_ok else 1
+        ok = bool(
+            info.get("rpi")
+            or info.get("etahen")
+            or info.get("port_12800")
+            or info["binloader"]
+            or ftp_ok
+        )
+        return 0 if ok else 1
 
     if args.command == "installed":
         ftp = _ftp_from_config(cfg)

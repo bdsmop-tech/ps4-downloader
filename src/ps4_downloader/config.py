@@ -15,8 +15,8 @@ class Ps4Config:
     ftp_port: int = 2121
     ftp_user: str = ""
     ftp_password: str = ""
-    # binloader = GoldHEN only (DPI with no other apps); auto tries RPI if present
-    install_method: str = "binloader"
+    # binloader = GoldHEN only; auto = DPI order (:12800 first, then BinLoader)
+    install_method: str = "auto"
 
 
 @dataclass(frozen=True)
