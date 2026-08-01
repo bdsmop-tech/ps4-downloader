@@ -11,15 +11,27 @@ class RpiError(RuntimeError):
 
 
 def is_rpi_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
-    """Same probe DirectPackageInstaller uses (GET /api → Unsupported method)."""
-    url = f"http://{ps4_host}:12800/api"
+    """True if something answers on :12800 (RPI / GoldHEN remote install / etaHEN)."""
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.get(url)
+            # Classic flatz RPI probe
+            resp = client.get(f"http://{ps4_host}:12800/api")
             body = resp.text
-            return "Unsupported method" in body and "fail" in body
+            if "Unsupported method" in body and "fail" in body:
+                return True
+            # Any HTTP answer on /api means an install service is up
+            if resp.status_code < 500:
+                return True
+    except httpx.HTTPError:
+        pass
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(f"http://{ps4_host}:12800/")
+            if resp.status_code < 500 or resp.text:
+                return True
     except httpx.HTTPError:
         return False
+    return False
 
 
 def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:

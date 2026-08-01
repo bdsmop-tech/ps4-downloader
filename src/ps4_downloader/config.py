@@ -71,7 +71,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             ftp_port=int(ps4.get("ftp_port", 2121)),
             ftp_user=str(ps4.get("ftp_user", "")),
             ftp_password=str(ps4.get("ftp_password", "")),
-            install_method=str(ps4.get("install_method", "binloader") or "binloader").lower(),
+            install_method=str(ps4.get("install_method", "auto") or "auto").lower(),
         ),
         download=DownloadConfig(
             dir=download_dir,

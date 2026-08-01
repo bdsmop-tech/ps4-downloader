@@ -4,8 +4,8 @@
 host = "192.168.1.50"
 # Your PC LAN IP (leave empty to auto-detect). Must be reachable FROM the PS4.
 pc_host = ""
-# GoldHEN-only install (same as DPI with no other apps open)
-install_method = "binloader"
+# auto = DPI order: use :12800 if open, else BinLoader :9090
+install_method = "auto"
 # Local HTTP port — PS4 downloads the PKG from here (DPI uses 9898)
 http_port = 9898
 # PC callback port patched into the DPI payload (DPI settings.ini PayloadPort)

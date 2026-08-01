@@ -82,7 +82,7 @@ class Ps4Installer:
         # Fixed PC callback port — DPI settings.ini PayloadPort (often 9191).
         # Ephemeral ports are frequently blocked by Windows Firewall for python.exe.
         self.payload_port = int(payload_port)
-        self.method = (method or "binloader").lower()
+        self.method = (method or "auto").lower()
         self.payload_path = payload_path if payload_path is not None else default_payload_path()
 
     def ping(self) -> dict[str, bool | int | None]:
@@ -164,20 +164,18 @@ class Ps4Installer:
         rpi_up = is_rpi_online(self.ps4_host) if use_rpi else False
 
         try:
-            # With only GoldHEN (no apps open), BinLoader is the real path — prefer it
-            # unless user forced rpi or RPI is clearly up in auto mode.
-            prefer_bin = self.method == "binloader" or (self.method == "auto" and not rpi_up)
-
-            if use_rpi and rpi_up and not prefer_bin:
-                status("Using Remote Package Installer (:12800)…")
+            # DPI order: if anything answers on :12800, use RPI/etaHEN API first.
+            # BinLoader is only needed when :12800 is down.
+            if use_rpi and rpi_up:
+                status("Using :12800 install API (same path DPI picks when RPI port is open)…")
                 try:
                     push_rpi(self.ps4_host, server.pkg_url)
                 except RpiError as exc:
                     if self.method == "rpi":
                         raise InstallError(str(exc)) from exc
-                    status(f"RPI failed ({exc}); falling back to BinLoader…")
+                    status(f"RPI/etaHEN push failed ({exc}); trying BinLoader…")
                 else:
-                    status("RPI accepted the package — console downloading over LAN…")
+                    status("Console accepted the package via :12800 — downloading over LAN…")
                     if wait_transfer:
                         return self._wait_for_download(server, info, "rpi")
                     return SendResult(
@@ -190,14 +188,14 @@ class Ps4Installer:
 
             if self.method == "rpi" and not rpi_up:
                 raise InstallError(
-                    f"RPI not reachable at {self.ps4_host}:12800. "
-                    "With only GoldHEN running use install_method = \"binloader\"."
+                    f"Nothing on {self.ps4_host}:12800. "
+                    "DPI needs this port open, or BinLoader on 9090."
                 )
 
             if not use_bin:
                 raise InstallError("No install method available")
 
-            status("Using GoldHEN BinLoader (same as DPI with no other apps open)…")
+            status("Using GoldHEN BinLoader…")
             ftp_client = None
             try:
                 from ps4_downloader.ftp_client import Ps4FtpClient
