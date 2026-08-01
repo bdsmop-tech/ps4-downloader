@@ -127,19 +127,85 @@ class Ps4FtpClient:
                 results.append(InstalledTitle(title_id=title_id, name=title_name))
             return results
 
-    def _read_title_name(self, ftp: FTP, title_id: str) -> str | None:
-        candidates = [
-            f"/system_data/priv/appmeta/{title_id}/param.sfo",
-            f"/user/appmeta/{title_id}/param.sfo",
-            f"/user/app/{title_id}/sce_sys/param.sfo",
-        ]
-        for remote in candidates:
+    def read_file(self, remote_path: str) -> bytes:
+        with self._connect() as ftp:
+            buf = io.BytesIO()
             try:
-                buf = io.BytesIO()
-                ftp.retrbinary(f"RETR {remote}", buf.write)
-                name = _sfo_get_title(buf.getvalue())
-                if name:
-                    return name
-            except error_perm:
+                ftp.retrbinary(f"RETR {remote_path}", buf.write)
+            except error_perm as exc:
+                raise Ps4FtpError(f"Cannot read {remote_path}: {exc}") from exc
+            return buf.getvalue()
+
+    def read_goldhen_config(self) -> dict[str, str]:
+        """Parse /data/GoldHEN/config.ini (or goldhen.cfg) into a flat key→value map."""
+        candidates = (
+            "/data/GoldHEN/config.ini",
+            "/data/GoldHEN/goldhen.cfg",
+            "/data/goldhen/config.ini",
+        )
+        raw = b""
+        last_err: Exception | None = None
+        for path in candidates:
+            try:
+                raw = self.read_file(path)
+                break
+            except Ps4FtpError as exc:
+                last_err = exc
                 continue
-        return None
+        if not raw:
+            raise Ps4FtpError(
+                f"GoldHEN config not found under /data/GoldHEN/ ({last_err})"
+            )
+
+        text = raw.decode("utf-8", errors="replace")
+        # Strip UTF-8 BOM / weird leading chars seen in some GoldHEN dumps
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        section = ""
+        out: dict[str, str] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip().lower()
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip().lower()
+            val = val.strip()
+            out[key] = val
+            if section:
+                out[f"{section}.{key}"] = val
+        return out
+
+    def binloader_settings(self) -> dict[str, object]:
+        """Return enabled/port from GoldHEN config when readable."""
+        try:
+            cfg = self.read_goldhen_config()
+        except Ps4FtpError:
+            return {"enabled": None, "port": None}
+
+        enabled_raw = cfg.get("binloader.enabled") or cfg.get("binloader_enabled")
+        port_raw = cfg.get("binloader.port") or cfg.get("binloader_port")
+        for k, v in cfg.items():
+            if "binloader" in k and k.endswith(".enabled"):
+                enabled_raw = v
+            if "binloader" in k and k.endswith(".port"):
+                port_raw = v
+
+        enabled: bool | None
+        if enabled_raw is None:
+            enabled = None
+        else:
+            enabled = str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+
+        port: int | None = None
+        if port_raw is not None:
+            try:
+                port = int(str(port_raw).strip())
+            except ValueError:
+                port = None
+
+        return {"enabled": enabled, "port": port}

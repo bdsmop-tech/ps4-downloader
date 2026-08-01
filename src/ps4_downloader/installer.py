@@ -88,23 +88,41 @@ class Ps4Installer:
     def ping(self) -> dict[str, bool | int | None]:
         rpi = is_rpi_online(self.ps4_host)
         etahen = is_etahen_online(self.ps4_host) if not rpi else False
+        ports = list(self.binloader_ports)
         bin_port: int | None = None
-        for port in self.binloader_ports:
+        bin_errors: dict[int, str] = {}
+        for port in ports:
             try:
                 with socket.create_connection((self.ps4_host, port), timeout=2.0):
                     bin_port = port
                     break
-            except OSError:
+            except OSError as exc:
+                bin_errors[port] = getattr(exc, "winerror", None) or getattr(exc, "errno", None) or str(exc)
                 continue
         return {
             "rpi": rpi,
             "etahen": etahen,
             "binloader": bin_port is not None,
             "binloader_port": bin_port,
+            "binloader_errors": bin_errors,
             "pc_host": self.pc_host,
             "payload_port": self.payload_port,
             "http_port": self.http_port,
         }
+
+    def resolve_binloader_ports(self, ftp: object | None = None) -> list[int]:
+        """Prefer port from GoldHEN config.ini when FTP can read it."""
+        ports = list(self.binloader_ports)
+        if ftp is None:
+            return ports
+        try:
+            settings = ftp.binloader_settings()  # type: ignore[attr-defined]
+        except Exception:
+            return ports
+        cfg_port = settings.get("port")
+        if isinstance(cfg_port, int) and cfg_port > 0:
+            ports = [cfg_port, *[p for p in ports if p != cfg_port]]
+        return ports
 
     def send_pkg(
         self,
@@ -180,7 +198,22 @@ class Ps4Installer:
                 raise InstallError("No install method available")
 
             status("Using GoldHEN BinLoader (same as DPI with no other apps open)…")
-            return self._send_via_binloader(server, info, wait_transfer=wait_transfer, status=status)
+            ftp_client = None
+            try:
+                from ps4_downloader.ftp_client import Ps4FtpClient
+
+                ftp_client = Ps4FtpClient(self.ps4_host)
+                if not ftp_client.ping():
+                    ftp_client = None
+            except Exception:
+                ftp_client = None
+            return self._send_via_binloader(
+                server,
+                info,
+                wait_transfer=wait_transfer,
+                status=status,
+                ftp=ftp_client,
+            )
         finally:
             time.sleep(1.0)
             server.stop()
@@ -192,10 +225,54 @@ class Ps4Installer:
         *,
         wait_transfer: bool,
         status: Callable[[str], None],
+        ftp: object | None = None,
     ) -> SendResult:
+        ports = self.resolve_binloader_ports(ftp)
+        # Probe BEFORE opening the callback port — avoids "9191 listened but nothing happened"
+        status(f"Probing BinLoader on {self.ps4_host} ports {ports}…")
+        probe_err: OSError | None = None
+        live_port: int | None = None
+        for port in ports:
+            try:
+                with socket.create_connection((self.ps4_host, port), timeout=2.0):
+                    live_port = port
+                    break
+            except OSError as exc:
+                probe_err = exc
+                continue
+        if live_port is None:
+            gh = {}
+            if ftp is not None:
+                try:
+                    gh = ftp.binloader_settings()  # type: ignore[attr-defined]
+                except Exception:
+                    gh = {}
+            enabled = gh.get("enabled")
+            cfg_port = gh.get("port")
+            win = getattr(probe_err, "winerror", None)
+            hint = (
+                "FTP can be ON while BinLoader is OFF — they are separate GoldHEN toggles.\n"
+                "GoldHEN → Server Settings → enable [bold]BinLoader Server[/bold] "
+                "(default port 9090), then retry.\n"
+                "DPI needs the same BinLoader; without it silent install cannot work.\n"
+                f"Tried ports {ports}."
+            )
+            if enabled is False:
+                hint = (
+                    "GoldHEN config.ini has BinLoader Enabled=0. "
+                    "Turn it on in GoldHEN → Server Settings (or set Enabled=1 and reload GoldHEN).\n"
+                    f"config port={cfg_port!r}. " + hint
+                )
+            elif cfg_port:
+                hint = f"GoldHEN config binloader_port={cfg_port}. " + hint
+            if win == 10061 or getattr(probe_err, "errno", None) in {111, 61}:
+                hint = f"Connection refused (10061) — nothing is listening. {hint}"
+            raise InstallError(hint) from probe_err
+
+        self.binloader_ports = [live_port, *[p for p in ports if p != live_port]]
+
         listen = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listen.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # DPI desktop binds IPAddress.Any + PayloadPort (often 9191 in settings.ini).
         bind_port = self.payload_port if self.payload_port > 0 else 0
         try:
             listen.bind(("0.0.0.0", bind_port))
@@ -214,8 +291,8 @@ class Ps4Installer:
         addr = ("", 0)
         try:
             status(
-                f"Listening for PS4 callback on {self.pc_host}:{info_port} "
-                f"(allow this port + {self.http_port} for python.exe in firewall)"
+                f"BinLoader live on :{live_port}. "
+                f"Callback {self.pc_host}:{info_port}; HTTP :{self.http_port}"
             )
             bin_port = self._inject_payload(info_port)
             status(f"Payload injected via BinLoader :{bin_port}, waiting for console…")
@@ -256,12 +333,10 @@ class Ps4Installer:
             )
         except socket.timeout as exc:
             raise InstallError(
-                f"PS4 did not connect back to {self.pc_host}:{info_port} "
-                f"after BinLoader inject (:{bin_port}).\n"
-                "GoldHEN → enable BinLoader (port 9090).\n"
-                f"Windows Firewall: allow python.exe inbound TCP {info_port} and {self.http_port}.\n"
-                f"Set pc_host to your LAN IP if auto-detect is wrong (now {self.pc_host}).\n"
-                "payload_port should match DPI PayloadPort (default 9191)."
+                f"Payload reached BinLoader :{bin_port}, but PS4 did not connect back "
+                f"to {self.pc_host}:{info_port}.\n"
+                f"Firewall: allow python.exe inbound TCP {info_port} and {self.http_port}.\n"
+                f"Confirm pc_host={self.pc_host} is the LAN IP the console can reach."
             ) from exc
         finally:
             listen.close()

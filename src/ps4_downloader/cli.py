@@ -105,27 +105,55 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ping":
         info = client.ping()
-        ftp_ok = _ftp_from_config(cfg).ping()
         console.print(
             f"PC LAN IP: [cyan]{info['pc_host']}[/cyan]  "
             f"callback:[cyan]{info['payload_port']}[/cyan]  "
             f"http:[cyan]{info['http_port']}[/cyan]  "
             f"method=[cyan]{cfg.ps4.install_method}[/cyan]"
         )
+        ftp = _ftp_from_config(cfg)
+        ftp_ok = ftp.ping()
+        gh_bin = {}
+        if ftp_ok:
+            try:
+                gh_bin = ftp.binloader_settings()
+            except Ps4FtpError:
+                gh_bin = {}
+            # Prefer GoldHEN config port when probing
+            if isinstance(gh_bin.get("port"), int):
+                client.binloader_ports = [
+                    int(gh_bin["port"]),
+                    *[p for p in client.binloader_ports if p != gh_bin["port"]],
+                ]
+                info = client.ping()
+
         if info["binloader"]:
             console.print(
                 f"[green]BinLoader[/green] {cfg.ps4.host}:{info['binloader_port']}  "
-                "← GoldHEN only / DPI path"
+                "← needed for silent install like DPI"
             )
         else:
+            errs = info.get("binloader_errors") or {}
             console.print(
-                f"[red]BinLoader[/red] not on {list(cfg.ps4.binloader_ports)} — "
-                "GoldHEN → Server Settings → enable BinLoader (9090)"
+                f"[red]BinLoader[/red] refused on {list(cfg.ps4.binloader_ports)} "
+                f"{errs}"
             )
+            if gh_bin.get("enabled") is False:
+                console.print(
+                    "[yellow]GoldHEN config.ini: BinLoader Enabled=0[/yellow] — "
+                    "включи BinLoader в Server Settings (это отдельно от FTP)"
+                )
+            elif ftp_ok:
+                console.print(
+                    "[yellow]FTP жив, BinLoader нет[/yellow] — в GoldHEN это два разных тумблера. "
+                    "DPI тоже нужен включённый BinLoader."
+                )
+            if gh_bin.get("port"):
+                console.print(f"config binloader_port=[cyan]{gh_bin['port']}[/cyan]")
         if info["rpi"]:
             console.print(f"[dim]RPI[/dim] {cfg.ps4.host}:12800 (optional)")
         if info["etahen"]:
-            console.print(f"[dim]etaHEN[/dim] on :12800")
+            console.print("[dim]etaHEN[/dim] on :12800")
         if ftp_ok:
             console.print(f"[green]FTP[/green] {cfg.ps4.host}:{cfg.ps4.ftp_port}")
         else:
