@@ -20,7 +20,7 @@ def tcp_open(host: str, port: int, *, timeout: float = 2.0) -> bool:
         return False
 
 
-def is_rpi_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
+def is_rpi_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
     """DPI IsRPIOnline: GET /api contains Unsupported method + fail."""
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -31,7 +31,7 @@ def is_rpi_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
         return False
 
 
-def is_etahen_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
+def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
     """DPI IsEtaHenOnline: GET / contains etaHEN."""
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -42,8 +42,35 @@ def is_etahen_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
 
 
 def port_12800_open(ps4_host: str, *, timeout: float = 2.0) -> bool:
-    """TCP accept on :12800 — do NOT require HTTP (GET may hang while POST works)."""
+    """TCP accept on :12800 (may be a zombie — not proof of RPI/etaHEN)."""
     return tcp_open(ps4_host, 12800, timeout=timeout)
+
+
+def classify_12800(ps4_host: str, *, timeout: float = 3.0) -> str:
+    """
+    What is on :12800?
+      closed | rpi | etahen | http_other | tcp_zombie
+    tcp_zombie = SYN-ACK then HTTP gets reset/timeout (not usable for install).
+    """
+    if not tcp_open(ps4_host, 12800, timeout=2.0):
+        return "closed"
+    if is_rpi_online(ps4_host, timeout=timeout):
+        return "rpi"
+    if is_etahen_online(ps4_host, timeout=timeout):
+        return "etahen"
+    # Any HTTP response at all?
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            client.get(f"http://{ps4_host}:12800/")
+            return "http_other"
+    except httpx.HTTPError:
+        pass
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            client.get(f"http://{ps4_host}:12800/api")
+            return "http_other"
+    except httpx.HTTPError:
+        return "tcp_zombie"
 
 
 def goldhen_http_ready(ps4_host: str, *, timeout: float = 2.0) -> bool:
@@ -128,20 +155,29 @@ def push_etahen(ps4_host: str, package_url: str, *, timeout: float = 60.0) -> di
 
 def push_12800(ps4_host: str, package_url: str, *, timeout: float = 60.0) -> tuple[str, dict]:
     """
-    If TCP :12800 accepts, POST like DPI — do NOT require GET probes.
-    GET /api and GET / often hang on some GoldHEN builds while POST still works
-    (user reports: TCP open, HTTP mute, DPI UI still installs).
-
-    Order: RPI /api/install → etaHEN /upload (DPI default when probe is ambiguous).
+    DPI order: only Push when HTTP probe says RPI or etaHEN.
+    Bare TCP on :12800 is NOT enough (zombie listeners RST HTTP — WinError 10054).
     """
-    if not tcp_open(ps4_host, 12800, timeout=2.0):
+    kind = classify_12800(ps4_host, timeout=3.0)
+    if kind == "closed":
         raise RpiError(f"TCP {ps4_host}:12800 closed")
+    if kind == "tcp_zombie":
+        raise RpiError(
+            f"TCP {ps4_host}:12800 accepts then resets HTTP (not RPI/etaHEN). "
+            "Skip this port — enable GoldHEN BinLoader or launch Remote Package Installer."
+        )
+    if kind == "http_other":
+        # Unknown HTTP — still try DPI endpoints (some forks answer differently on GET).
+        errors: list[str] = []
+        for name, fn in (("rpi", push_rpi), ("etahen", push_etahen)):
+            try:
+                return name, fn(ps4_host, package_url, timeout=timeout)
+            except RpiError as exc:
+                errors.append(f"{name}: {exc}")
+        raise RpiError(" | ".join(errors))
 
-    errors: list[str] = []
-    for name, fn in (("rpi", push_rpi), ("etahen", push_etahen)):
-        try:
-            return name, fn(ps4_host, package_url, timeout=timeout)
-        except RpiError as exc:
-            errors.append(f"{name}: {exc}")
-
-    raise RpiError(" | ".join(errors) if errors else "no attempt")
+    if kind == "rpi":
+        return "rpi", push_rpi(ps4_host, package_url, timeout=timeout)
+    if kind == "etahen":
+        return "etahen", push_etahen(ps4_host, package_url, timeout=timeout)
+    raise RpiError(f"Unexpected :12800 class {kind!r}")

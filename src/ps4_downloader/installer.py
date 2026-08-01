@@ -22,10 +22,8 @@ from ps4_downloader.pkg_server import PkgHttpServer
 from ps4_downloader.paths import payload_path as default_payload_path
 from ps4_downloader.rpi_client import (
     RpiError,
+    classify_12800,
     goldhen_http_ready,
-    is_etahen_online,
-    is_rpi_online,
-    port_12800_open,
     push_12800,
 )
 
@@ -92,10 +90,11 @@ class Ps4Installer:
         self.method = (method or "auto").lower()
         self.payload_path = payload_path if payload_path is not None else default_payload_path()
 
-    def ping(self) -> dict[str, bool | int | None]:
-        rpi = is_rpi_online(self.ps4_host)
-        etahen = is_etahen_online(self.ps4_host)
-        p128 = port_12800_open(self.ps4_host) if not (rpi or etahen) else True
+    def ping(self) -> dict[str, bool | int | None | str]:
+        kind = classify_12800(self.ps4_host)
+        rpi = kind == "rpi"
+        etahen = kind == "etahen"
+        p128 = kind != "closed"
         ports = list(self.binloader_ports)
         bin_port: int | None = None
         bin_errors: dict[int, str] = {}
@@ -110,7 +109,8 @@ class Ps4Installer:
         return {
             "rpi": rpi,
             "etahen": etahen,
-            "port_12800": p128 or rpi or etahen,
+            "port_12800": p128,
+            "port_12800_kind": kind,
             "goldhen_http": goldhen_http_ready(self.ps4_host),
             "binloader": bin_port is not None,
             "binloader_port": bin_port,
@@ -171,15 +171,13 @@ class Ps4Installer:
 
         use_rpi = self.method in {"auto", "rpi"}
         use_bin = self.method in {"auto", "binloader"}
-        # Decision = TCP only. GET probes hang on some setups while DPI still POSTs OK.
-        p128 = port_12800_open(self.ps4_host) if use_rpi else False
+        # DPI only PushRPI/PushEtaHen after HTTP probe succeeds — not bare TCP.
+        kind = classify_12800(self.ps4_host) if use_rpi else "closed"
+        http_128 = kind in {"rpi", "etahen", "http_other"}
 
         try:
-            if use_rpi and p128:
-                status(
-                    f"TCP {self.ps4_host}:12800 open — "
-                    "POST /api/install then /upload (skip GET probes)…"
-                )
+            if use_rpi and http_128:
+                status(f":12800 classified as {kind} — POST like DPI…")
                 try:
                     method, _data = push_12800(self.ps4_host, server.pkg_url)
                 except RpiError as exc:
@@ -197,9 +195,20 @@ class Ps4Installer:
                         download_complete=False,
                         method=method,
                     )
+            elif use_rpi and kind == "tcp_zombie":
+                status(
+                    f"TCP {self.ps4_host}:12800 is a zombie "
+                    "(accepts TCP, resets HTTP) — not RPI/etaHEN; skipping like DPI"
+                )
+            elif use_rpi and kind == "closed":
+                status(f":12800 closed on {self.ps4_host}")
 
-            if self.method == "rpi" and not p128:
-                raise InstallError(f"Nothing on {self.ps4_host}:12800")
+            if self.method == "rpi":
+                raise InstallError(
+                    f"No working RPI/etaHEN HTTP on {self.ps4_host}:12800 "
+                    f"(classified={kind}). Launch Remote Package Installer, or use "
+                    "install_method=binloader with GoldHEN BinLoader enabled."
+                )
 
             if not use_bin:
                 raise InstallError("No install method available")
@@ -258,10 +267,11 @@ class Ps4Installer:
             cfg_port = gh.get("port")
             win = getattr(probe_err, "winerror", None)
             hint = (
-                "FTP can be ON while BinLoader is OFF — they are separate GoldHEN toggles.\n"
+                "No silent-install path is live on the console right now.\n"
+                "DPI needs ONE of: working RPI/etaHEN HTTP on :12800, OR GoldHEN BinLoader on :9090.\n"
+                "Your :12800 is a TCP zombie (RST on HTTP) — that is NOT RPI.\n"
                 "GoldHEN → Server Settings → enable [bold]BinLoader Server[/bold] "
-                "(default port 9090), then retry.\n"
-                "DPI needs the same BinLoader; without it silent install cannot work.\n"
+                "(port 9090), leave it on, then retry.\n"
                 f"Tried ports {ports}."
             )
             if enabled is False:

@@ -127,18 +127,24 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 info = client.ping()
 
-        if info.get("port_12800"):
+        kind = info.get("port_12800_kind") or "closed"
+        if kind == "rpi":
+            console.print(f"[green]:12800 RPI HTTP[/green] (/api/install)")
+        elif kind == "etahen":
+            console.print(f"[green]:12800 etaHEN HTTP[/green] (/upload)")
+        elif kind == "http_other":
             console.print(
-                f"[cyan]TCP :12800[/cyan] open — will POST even if GET times out"
+                f"[yellow]:12800 HTTP[/yellow] unknown banner — will try RPI/etaHEN POSTs"
             )
-        if info.get("rpi"):
-            console.print(f"[green]:12800 RPI HTTP[/green] (/api)")
-        if info.get("etahen"):
-            console.print(f"[green]:12800 etaHEN HTTP[/green]")
+        elif kind == "tcp_zombie":
+            console.print(
+                f"[yellow]:12800 TCP zombie[/yellow] — accepts then resets HTTP "
+                f"(not RPI/etaHEN; install needs BinLoader)"
+            )
+        else:
+            console.print(f"[dim]:12800[/dim] closed on {cfg.ps4.host}")
         if info.get("goldhen_http"):
             console.print(f"[green]:9090/status[/green] ready (GoldHEN HTTP)")
-        if not info.get("port_12800") and not info.get("rpi") and not info.get("etahen"):
-            console.print(f"[dim]:12800[/dim] closed on {cfg.ps4.host}")
         if info["binloader"]:
             console.print(
                 f"[green]BinLoader TCP[/green] {cfg.ps4.host}:{info['binloader_port']}"
@@ -148,19 +154,32 @@ def main(argv: list[str] | None = None) -> int:
             console.print(
                 f"[dim]BinLoader TCP[/dim] closed {list(client.binloader_ports)} {errs}"
             )
+            if gh_bin.get("enabled") is False:
+                console.print(
+                    "[red]GoldHEN config.ini: BinLoader Enabled=0[/red] — turn it on"
+                )
+            elif gh_bin.get("enabled") is True and not info["binloader"]:
+                console.print(
+                    "[yellow]config says BinLoader on, but :9090 is closed[/yellow] — "
+                    "reload GoldHEN / re-enable Server Settings"
+                )
         if ftp_ok:
             console.print(f"[green]FTP[/green] {cfg.ps4.host}:{cfg.ps4.ftp_port}")
         else:
             console.print(f"[dim]FTP[/dim] {cfg.ps4.host}:{cfg.ps4.ftp_port} offline")
-        ok = bool(
+        install_ok = bool(
             info.get("rpi")
             or info.get("etahen")
-            or info.get("port_12800")
+            or kind == "http_other"
             or info.get("goldhen_http")
             or info["binloader"]
-            or ftp_ok
         )
-        return 0 if ok else 1
+        if ftp_ok and not install_ok:
+            console.print(
+                "[yellow]FTP up, but no install path[/yellow] "
+                "(need RPI HTTP or BinLoader :9090)"
+            )
+        return 0 if (install_ok or ftp_ok) else 1
 
     if args.command == "installed":
         ftp = _ftp_from_config(cfg)
