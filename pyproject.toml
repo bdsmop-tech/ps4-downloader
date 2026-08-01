@@ -1,0 +1,19 @@
+[project]
+name = "ps4-downloader"
+version = "0.1.0"
+description = "Download PKG files and install them on a PS4 via GoldHEN BinLoader"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28.0",
+  "rich>=13.9.0",
+]
+
+[project.scripts]
+ps4-downloader = "ps4_downloader.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+config.toml
+downloads/
+*.pkg
+.DS_Store
+.idea/
+.vscode/
+dist/
+dist/_win_build/
+*.spec
