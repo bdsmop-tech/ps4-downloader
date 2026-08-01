@@ -22,6 +22,7 @@ from ps4_downloader.pkg_server import PkgHttpServer
 from ps4_downloader.paths import payload_path as default_payload_path
 from ps4_downloader.rpi_client import (
     RpiError,
+    goldhen_http_ready,
     is_etahen_online,
     is_rpi_online,
     port_12800_open,
@@ -110,6 +111,7 @@ class Ps4Installer:
             "rpi": rpi,
             "etahen": etahen,
             "port_12800": p128 or rpi or etahen,
+            "goldhen_http": goldhen_http_ready(self.ps4_host),
             "binloader": bin_port is not None,
             "binloader_port": bin_port,
             "binloader_errors": bin_errors,
@@ -169,23 +171,21 @@ class Ps4Installer:
 
         use_rpi = self.method in {"auto", "rpi"}
         use_bin = self.method in {"auto", "binloader"}
-        rpi_up = is_rpi_online(self.ps4_host) if use_rpi else False
-        eta_up = is_etahen_online(self.ps4_host) if use_rpi else False
+        # Decision = TCP only. GET probes hang on some setups while DPI still POSTs OK.
         p128 = port_12800_open(self.ps4_host) if use_rpi else False
 
         try:
-            # Match DPI exactly: RPI → etaHEN → BinLoader
-            if use_rpi and (rpi_up or eta_up or p128):
+            if use_rpi and p128:
                 status(
-                    f":12800 up (rpi={rpi_up} etahen={eta_up}) — "
-                    "pushing like DPI (not BinLoader)…"
+                    f"TCP {self.ps4_host}:12800 open — "
+                    "POST /api/install then /upload (skip GET probes)…"
                 )
                 try:
                     method, _data = push_12800(self.ps4_host, server.pkg_url)
                 except RpiError as exc:
                     if self.method == "rpi":
                         raise InstallError(str(exc)) from exc
-                    status(f":12800 push failed ({exc}); trying BinLoader…")
+                    status(f":12800 POST failed ({exc}); trying BinLoader…")
                 else:
                     status(f"Accepted via {method} on :12800 — console downloading…")
                     if wait_transfer:
@@ -198,7 +198,7 @@ class Ps4Installer:
                         method=method,
                     )
 
-            if self.method == "rpi" and not (rpi_up or eta_up or p128):
+            if self.method == "rpi" and not p128:
                 raise InstallError(f"Nothing on {self.ps4_host}:12800")
 
             if not use_bin:

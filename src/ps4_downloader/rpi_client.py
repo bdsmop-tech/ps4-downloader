@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import socket
 from urllib.parse import quote
 
 import httpx
@@ -11,7 +12,15 @@ class RpiError(RuntimeError):
     pass
 
 
-def is_rpi_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
+def tcp_open(host: str, port: int, *, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def is_rpi_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
     """DPI IsRPIOnline: GET /api contains Unsupported method + fail."""
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -22,7 +31,7 @@ def is_rpi_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
         return False
 
 
-def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
+def is_etahen_online(ps4_host: str, *, timeout: float = 2.0) -> bool:
     """DPI IsEtaHenOnline: GET / contains etaHEN."""
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -32,32 +41,30 @@ def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
         return False
 
 
-def port_12800_open(ps4_host: str, *, timeout: float = 3.0) -> bool:
-    """Any HTTP service on :12800 (RPI, etaHEN, or unknown)."""
+def port_12800_open(ps4_host: str, *, timeout: float = 2.0) -> bool:
+    """TCP accept on :12800 — do NOT require HTTP (GET may hang while POST works)."""
+    return tcp_open(ps4_host, 12800, timeout=timeout)
+
+
+def goldhen_http_ready(ps4_host: str, *, timeout: float = 2.0) -> bool:
+    """DPI IsGoldHENOnline: GET :9090/status → status ready."""
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.get(f"http://{ps4_host}:12800/")
-            return True
-    except httpx.HTTPError:
-        pass
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            client.get(f"http://{ps4_host}:12800/api")
-            return True
+            resp = client.get(f"http://{ps4_host}:9090/status")
+            compact = resp.text.replace(" ", "")
+            return '"status":"ready"' in compact
     except httpx.HTTPError:
         return False
 
 
-def push_rpi(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
+def push_rpi(ps4_host: str, package_url: str, *, timeout: float = 60.0) -> dict:
     """Exact DPI PushRPI: POST text JSON to /api/install with UrlEncoded package URL."""
     url = package_url.replace("https://", "http://")
     escaped = quote(url, safe="")
-    # DPI builds JSON by string concat — same shape
     body = f'{{"type":"direct","packages":["{escaped}"]}}'
     endpoint = f"http://{ps4_host}:12800/api/install"
     try:
         with httpx.Client(timeout=timeout) as client:
-            # DPI uses StringContent → text/plain, NOT application/json
             resp = client.post(
                 endpoint,
                 content=body.encode("utf-8"),
@@ -69,7 +76,7 @@ def push_rpi(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
 
     if '"success"' in text or "success" in text.lower():
         try:
-            return resp.json()
+            return json.loads(text)
         except Exception:
             return {"raw": text}
     if "0x80990085" in text:
@@ -77,12 +84,11 @@ def push_rpi(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
     raise RpiError(f"RPI rejected: {text}")
 
 
-def push_etahen(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
+def push_etahen(ps4_host: str, package_url: str, *, timeout: float = 60.0) -> dict:
     """Exact DPI PushEtaHen: multipart POST to /upload with url field."""
     url = package_url.replace("https://", "http://")
     endpoint = f"http://{ps4_host}:12800/upload"
     boundary = "----DirectPackageInstaller_" + secrets.token_hex(16)
-    # Mirror DPI: empty file part + url part
     parts: list[bytes] = []
     parts.append(
         (
@@ -120,40 +126,22 @@ def push_etahen(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> di
     raise RpiError(f"etaHEN rejected: {text}")
 
 
-def push_12800(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> tuple[str, dict]:
+def push_12800(ps4_host: str, package_url: str, *, timeout: float = 60.0) -> tuple[str, dict]:
     """
-    Same decision order as DPI Installer.PushPackage for :12800 services.
-    Returns (method_name, response).
+    If TCP :12800 accepts, POST like DPI — do NOT require GET probes.
+    GET /api and GET / often hang on some GoldHEN builds while POST still works
+    (user reports: TCP open, HTTP mute, DPI UI still installs).
+
+    Order: RPI /api/install → etaHEN /upload (DPI default when probe is ambiguous).
     """
-    rpi = is_rpi_online(ps4_host, timeout=timeout)
-    eta = is_etahen_online(ps4_host, timeout=timeout)
-    open_ = port_12800_open(ps4_host, timeout=timeout)
+    if not tcp_open(ps4_host, 12800, timeout=2.0):
+        raise RpiError(f"TCP {ps4_host}:12800 closed")
 
     errors: list[str] = []
-
-    if rpi:
+    for name, fn in (("rpi", push_rpi), ("etahen", push_etahen)):
         try:
-            return "rpi", push_rpi(ps4_host, package_url, timeout=timeout)
+            return name, fn(ps4_host, package_url, timeout=timeout)
         except RpiError as exc:
-            errors.append(str(exc))
+            errors.append(f"{name}: {exc}")
 
-    if eta:
-        try:
-            return "etahen", push_etahen(ps4_host, package_url, timeout=timeout)
-        except RpiError as exc:
-            errors.append(str(exc))
-
-    # Port open but probes unclear — try both like a confused DPI client
-    if open_ and not rpi and not eta:
-        try:
-            return "rpi", push_rpi(ps4_host, package_url, timeout=timeout)
-        except RpiError as exc:
-            errors.append(str(exc))
-        try:
-            return "etahen", push_etahen(ps4_host, package_url, timeout=timeout)
-        except RpiError as exc:
-            errors.append(str(exc))
-
-    if errors:
-        raise RpiError(" | ".join(errors))
-    raise RpiError(f"Nothing usable on {ps4_host}:12800")
+    raise RpiError(" | ".join(errors) if errors else "no attempt")

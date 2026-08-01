@@ -127,25 +127,26 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 info = client.ping()
 
-        if info.get("rpi"):
-            console.print(f"[green]:12800 RPI[/green] {cfg.ps4.host} (/api/install)")
-        if info.get("etahen"):
-            console.print(f"[green]:12800 etaHEN[/green] {cfg.ps4.host} (/upload)")
-        if info.get("port_12800") and not info.get("rpi") and not info.get("etahen"):
+        if info.get("port_12800"):
             console.print(
-                f"[yellow]:12800 open[/yellow] on {cfg.ps4.host} "
-                "(unknown service — will try RPI then etaHEN like DPI)"
+                f"[cyan]TCP :12800[/cyan] open — will POST even if GET times out"
             )
+        if info.get("rpi"):
+            console.print(f"[green]:12800 RPI HTTP[/green] (/api)")
+        if info.get("etahen"):
+            console.print(f"[green]:12800 etaHEN HTTP[/green]")
+        if info.get("goldhen_http"):
+            console.print(f"[green]:9090/status[/green] ready (GoldHEN HTTP)")
         if not info.get("port_12800") and not info.get("rpi") and not info.get("etahen"):
             console.print(f"[dim]:12800[/dim] closed on {cfg.ps4.host}")
         if info["binloader"]:
             console.print(
-                f"[green]BinLoader[/green] {cfg.ps4.host}:{info['binloader_port']}"
+                f"[green]BinLoader TCP[/green] {cfg.ps4.host}:{info['binloader_port']}"
             )
         else:
             errs = info.get("binloader_errors") or {}
             console.print(
-                f"[dim]BinLoader[/dim] closed {list(client.binloader_ports)} {errs}"
+                f"[dim]BinLoader TCP[/dim] closed {list(client.binloader_ports)} {errs}"
             )
         if ftp_ok:
             console.print(f"[green]FTP[/green] {cfg.ps4.host}:{cfg.ps4.ftp_port}")
@@ -155,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
             info.get("rpi")
             or info.get("etahen")
             or info.get("port_12800")
+            or info.get("goldhen_http")
             or info["binloader"]
             or ftp_ok
         )
