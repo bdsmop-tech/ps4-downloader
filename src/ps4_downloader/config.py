@@ -11,7 +11,7 @@ class Ps4Config:
     pc_host: str
     binloader_ports: tuple[int, ...]
     http_port: int = 9898
-    payload_port: int = 9191
+    payload_port: int = 8080
     ftp_port: int = 2121
     ftp_user: str = ""
     ftp_password: str = ""
@@ -67,7 +67,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             pc_host=str(ps4.get("pc_host", "") or ""),
             binloader_ports=tuple(int(p) for p in ports),
             http_port=int(ps4.get("http_port", 9898)),
-            payload_port=int(ps4.get("payload_port", 9191)),
+            payload_port=int(ps4.get("payload_port", 8080)),
             ftp_port=int(ps4.get("ftp_port", 2121)),
             ftp_user=str(ps4.get("ftp_user", "")),
             ftp_password=str(ps4.get("ftp_password", "")),

@@ -8,9 +8,9 @@ pc_host = ""
 install_method = "auto"
 # Local HTTP port — PS4 downloads the PKG from here (DPI uses 9898)
 http_port = 9898
-# PC callback port patched into the DPI payload (DPI settings.ini PayloadPort)
-# Often 9191 — allow this + http_port in Windows Firewall for python.exe
-payload_port = 9191
+# PC callback port patched into the DPI payload (must match DPI settings.ini PayloadPort)
+# Common: 8080 (this DPI) or 9191 — allow this + http_port in Windows Firewall for python.exe
+payload_port = 8080
 # GoldHEN BinLoader on the console (default 9090)
 binloader_ports = [9090, 9021, 9020]
 ftp_port = 2121

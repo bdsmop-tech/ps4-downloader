@@ -75,7 +75,7 @@ class Ps4Installer:
         pc_host: str | None = None,
         binloader_ports: list[int] | None = None,
         http_port: int = 9898,
-        payload_port: int = 9191,
+        payload_port: int = 8080,
         method: str = "binloader",
         payload_path: Path | None = None,
     ) -> None:
@@ -84,7 +84,7 @@ class Ps4Installer:
         # GoldHEN BinLoader ports (DPI order)
         self.binloader_ports = binloader_ports or [9090, 9021, 9020]
         self.http_port = http_port
-        # Fixed PC callback port — DPI settings.ini PayloadPort (often 9191).
+        # Fixed PC callback port — must match DPI settings.ini PayloadPort (often 8080).
         # Ephemeral ports are frequently blocked by Windows Firewall for python.exe.
         self.payload_port = int(payload_port)
         self.method = (method or "auto").lower()
@@ -244,7 +244,7 @@ class Ps4Installer:
         ftp: object | None = None,
     ) -> SendResult:
         ports = self.resolve_binloader_ports(ftp)
-        # Probe BEFORE opening the callback port — avoids "9191 listened but nothing happened"
+        # Probe BEFORE opening the callback port — avoids "listened but nothing happened"
         status(f"Probing BinLoader on {self.ps4_host} ports {ports}…")
         probe_err: OSError | None = None
         live_port: int | None = None
