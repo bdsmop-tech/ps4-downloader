@@ -1,15 +1,18 @@
 # Copy to config.toml and fill in your values.
 
 [ps4]
-# Console IP (Settings → System → System Information)
 host = "192.168.1.50"
-# Your PC LAN IP (leave empty to auto-detect)
+# Your PC LAN IP (leave empty to auto-detect). Must be reachable FROM the PS4.
 pc_host = ""
-# GoldHEN BinLoader ports to try (default GoldHEN is 9090)
-binloader_ports = [9090, 9191, 9021, 9020]
-# Local HTTP port used to serve PKG to the console (must be reachable from PS4)
+# GoldHEN-only install (same as DPI with no other apps open)
+install_method = "binloader"
+# Local HTTP port — PS4 downloads the PKG from here (DPI uses 9898)
 http_port = 9898
-# GoldHEN FTP (for listing installed games). Default is 2121.
+# PC callback port patched into the DPI payload (DPI settings.ini PayloadPort)
+# Often 9191 — allow this + http_port in Windows Firewall for python.exe
+payload_port = 9191
+# GoldHEN BinLoader on the console (default 9090)
+binloader_ports = [9090, 9021, 9020]
 ftp_port = 2121
 ftp_user = ""
 ftp_password = ""
