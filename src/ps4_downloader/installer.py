@@ -20,7 +20,13 @@ from rich.progress import (
 from ps4_downloader.pkg_info import PkgInfo, read_pkg_info
 from ps4_downloader.pkg_server import PkgHttpServer
 from ps4_downloader.paths import payload_path as default_payload_path
-from ps4_downloader.rpi_client import RpiError, is_etahen_online, is_rpi_online, push_rpi
+from ps4_downloader.rpi_client import (
+    RpiError,
+    is_etahen_online,
+    is_rpi_online,
+    port_12800_open,
+    push_12800,
+)
 
 # Marker inside DPI's installer payload — replaced with PC IP + listen port.
 _MARKER = bytes([0xB4] * 6)
@@ -87,7 +93,8 @@ class Ps4Installer:
 
     def ping(self) -> dict[str, bool | int | None]:
         rpi = is_rpi_online(self.ps4_host)
-        etahen = is_etahen_online(self.ps4_host) if not rpi else False
+        etahen = is_etahen_online(self.ps4_host)
+        p128 = port_12800_open(self.ps4_host) if not (rpi or etahen) else True
         ports = list(self.binloader_ports)
         bin_port: int | None = None
         bin_errors: dict[int, str] = {}
@@ -102,6 +109,7 @@ class Ps4Installer:
         return {
             "rpi": rpi,
             "etahen": etahen,
+            "port_12800": p128 or rpi or etahen,
             "binloader": bin_port is not None,
             "binloader_port": bin_port,
             "binloader_errors": bin_errors,
@@ -162,40 +170,41 @@ class Ps4Installer:
         use_rpi = self.method in {"auto", "rpi"}
         use_bin = self.method in {"auto", "binloader"}
         rpi_up = is_rpi_online(self.ps4_host) if use_rpi else False
+        eta_up = is_etahen_online(self.ps4_host) if use_rpi else False
+        p128 = port_12800_open(self.ps4_host) if use_rpi else False
 
         try:
-            # DPI order: if anything answers on :12800, use RPI/etaHEN API first.
-            # BinLoader is only needed when :12800 is down.
-            if use_rpi and rpi_up:
-                status("Using :12800 install API (same path DPI picks when RPI port is open)…")
+            # Match DPI exactly: RPI → etaHEN → BinLoader
+            if use_rpi and (rpi_up or eta_up or p128):
+                status(
+                    f":12800 up (rpi={rpi_up} etahen={eta_up}) — "
+                    "pushing like DPI (not BinLoader)…"
+                )
                 try:
-                    push_rpi(self.ps4_host, server.pkg_url)
+                    method, _data = push_12800(self.ps4_host, server.pkg_url)
                 except RpiError as exc:
                     if self.method == "rpi":
                         raise InstallError(str(exc)) from exc
-                    status(f"RPI/etaHEN push failed ({exc}); trying BinLoader…")
+                    status(f":12800 push failed ({exc}); trying BinLoader…")
                 else:
-                    status("Console accepted the package via :12800 — downloading over LAN…")
+                    status(f"Accepted via {method} on :12800 — console downloading…")
                     if wait_transfer:
-                        return self._wait_for_download(server, info, "rpi")
+                        return self._wait_for_download(server, info, method)
                     return SendResult(
                         pkg_name=pkg_path.name,
                         package_size=info.package_size,
                         bytes_sent=server.bytes_sent,
                         download_complete=False,
-                        method="rpi",
+                        method=method,
                     )
 
-            if self.method == "rpi" and not rpi_up:
-                raise InstallError(
-                    f"Nothing on {self.ps4_host}:12800. "
-                    "DPI needs this port open, or BinLoader on 9090."
-                )
+            if self.method == "rpi" and not (rpi_up or eta_up or p128):
+                raise InstallError(f"Nothing on {self.ps4_host}:12800")
 
             if not use_bin:
                 raise InstallError("No install method available")
 
-            status("Using GoldHEN BinLoader…")
+            status("Using GoldHEN BinLoader (DPI last resort)…")
             ftp_client = None
             try:
                 from ps4_downloader.ftp_client import Ps4FtpClient

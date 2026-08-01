@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from urllib.parse import quote
 
 import httpx
@@ -11,30 +12,18 @@ class RpiError(RuntimeError):
 
 
 def is_rpi_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
-    """True if something answers on :12800 (RPI / GoldHEN remote install / etaHEN)."""
+    """DPI IsRPIOnline: GET /api contains Unsupported method + fail."""
     try:
         with httpx.Client(timeout=timeout) as client:
-            # Classic flatz RPI probe
             resp = client.get(f"http://{ps4_host}:12800/api")
             body = resp.text
-            if "Unsupported method" in body and "fail" in body:
-                return True
-            # Any HTTP answer on /api means an install service is up
-            if resp.status_code < 500:
-                return True
-    except httpx.HTTPError:
-        pass
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(f"http://{ps4_host}:12800/")
-            if resp.status_code < 500 or resp.text:
-                return True
+            return "Unsupported method" in body and "fail" in body
     except httpx.HTTPError:
         return False
-    return False
 
 
 def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
+    """DPI IsEtaHenOnline: GET / contains etaHEN."""
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(f"http://{ps4_host}:12800/")
@@ -43,45 +32,128 @@ def is_etahen_online(ps4_host: str, *, timeout: float = 3.0) -> bool:
         return False
 
 
-def _looks_success(raw: str, data: object) -> bool:
-    low = raw.lower()
-    if "success" in low:
-        return True
-    if "fail" in low or "error" in low:
-        return False
-    if isinstance(data, dict):
-        status = str(data.get("status", "")).lower()
-        if status in {"success", "0"}:
+def port_12800_open(ps4_host: str, *, timeout: float = 3.0) -> bool:
+    """Any HTTP service on :12800 (RPI, etaHEN, or unknown)."""
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(f"http://{ps4_host}:12800/")
             return True
-    return False
+    except httpx.HTTPError:
+        pass
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            client.get(f"http://{ps4_host}:12800/api")
+            return True
+    except httpx.HTTPError:
+        return False
 
 
 def push_rpi(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
-    """Tell Remote Package Installer to queue a direct PKG URL (DPI-compatible)."""
+    """Exact DPI PushRPI: POST text JSON to /api/install with UrlEncoded package URL."""
     url = package_url.replace("https://", "http://")
+    escaped = quote(url, safe="")
+    # DPI builds JSON by string concat — same shape
+    body = f'{{"type":"direct","packages":["{escaped}"]}}'
     endpoint = f"http://{ps4_host}:12800/api/install"
-    last_error = ""
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            # DPI uses StringContent → text/plain, NOT application/json
+            resp = client.post(
+                endpoint,
+                content=body.encode("utf-8"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+            )
+            text = resp.text
+    except httpx.HTTPError as exc:
+        raise RpiError(f"RPI /api/install failed: {exc}") from exc
 
-    # 1) raw URL in JSON (most senders)  2) DPI UrlEncode form
-    for packages in ([url], [quote(url, safe="")]):
-        payload = {"type": "direct", "packages": packages}
+    if '"success"' in text or "success" in text.lower():
         try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(endpoint, json=payload)
-                text = resp.text
-                try:
-                    data = resp.json()
-                except json.JSONDecodeError:
-                    data = {"raw": text}
-        except httpx.HTTPError as exc:
-            last_error = str(exc)
-            continue
+            return resp.json()
+        except Exception:
+            return {"raw": text}
+    if "0x80990085" in text:
+        raise RpiError(f"PS4 rejected install (free space?): {text}")
+    raise RpiError(f"RPI rejected: {text}")
 
-        raw = text if isinstance(text, str) else str(data)
-        if "0x80990085" in raw:
-            raise RpiError(f"PS4 rejected install (likely not enough free space): {raw}")
-        if _looks_success(raw, data):
-            return data if isinstance(data, dict) else {"raw": raw}
-        last_error = raw
 
-    raise RpiError(f"PS4 install rejected: {last_error}")
+def push_etahen(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> dict:
+    """Exact DPI PushEtaHen: multipart POST to /upload with url field."""
+    url = package_url.replace("https://", "http://")
+    endpoint = f"http://{ps4_host}:12800/upload"
+    boundary = "----DirectPackageInstaller_" + secrets.token_hex(16)
+    # Mirror DPI: empty file part + url part
+    parts: list[bytes] = []
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename=""\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+            f"\r\n"
+        ).encode("utf-8")
+    )
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="url"\r\n\r\n'
+            f"{url}\r\n"
+        ).encode("utf-8")
+    )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                endpoint,
+                content=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            text = resp.text
+    except httpx.HTTPError as exc:
+        raise RpiError(f"etaHEN /upload failed: {exc}") from exc
+
+    if "SUCCESS:" in text:
+        return {"raw": text}
+    if "0x80990085" in text:
+        raise RpiError(f"PS4 rejected install (free space?): {text}")
+    raise RpiError(f"etaHEN rejected: {text}")
+
+
+def push_12800(ps4_host: str, package_url: str, *, timeout: float = 30.0) -> tuple[str, dict]:
+    """
+    Same decision order as DPI Installer.PushPackage for :12800 services.
+    Returns (method_name, response).
+    """
+    rpi = is_rpi_online(ps4_host, timeout=timeout)
+    eta = is_etahen_online(ps4_host, timeout=timeout)
+    open_ = port_12800_open(ps4_host, timeout=timeout)
+
+    errors: list[str] = []
+
+    if rpi:
+        try:
+            return "rpi", push_rpi(ps4_host, package_url, timeout=timeout)
+        except RpiError as exc:
+            errors.append(str(exc))
+
+    if eta:
+        try:
+            return "etahen", push_etahen(ps4_host, package_url, timeout=timeout)
+        except RpiError as exc:
+            errors.append(str(exc))
+
+    # Port open but probes unclear — try both like a confused DPI client
+    if open_ and not rpi and not eta:
+        try:
+            return "rpi", push_rpi(ps4_host, package_url, timeout=timeout)
+        except RpiError as exc:
+            errors.append(str(exc))
+        try:
+            return "etahen", push_etahen(ps4_host, package_url, timeout=timeout)
+        except RpiError as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise RpiError(" | ".join(errors))
+    raise RpiError(f"Nothing usable on {ps4_host}:12800")
